@@ -3,7 +3,6 @@ package main
 import (
 	"bytes"
 	"encoding/json"
-	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -27,14 +26,16 @@ type Cell struct {
 	Executing bool   // The cell that is currently being executed
 }
 
-func (p *Program) run() ([]byte, error) {
+func (p *Program) run(executingFragment int) ([]byte, error) {
 	err := exec.Command("gopls", "imports", "-w", filepath.Join(p.File)).Run()
 	if err != nil {
 		return nil, err
 	}
 	out, err := exec.Command("go", "run", filepath.Join(p.File)).CombinedOutput()
 	if err != nil {
-		return nil, err
+		// If cell doesn't run due to error, clear it
+		p.Cells[executingFragment].Contents = ""
+		return out, err
 	}
 	err = exec.Command("go", "fmt", filepath.Join(p.File)).Run()
 	if err != nil {
@@ -51,15 +52,7 @@ func (p *Program) run() ([]byte, error) {
 	return out[s[1]:e[0]], nil
 }
 
-func (p *Program) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	p.Functions = ""
-	b := make([]byte, r.ContentLength)
-	_, err := r.Body.Read(b)
-	if err == io.EOF {
-		log.Println("Parsed message")
-	}
-	var input Cell
-	_ = json.Unmarshal([]byte(b), &input)
+func (p *Program) writeFile(input Cell) error {
 	p.Cells[input.Fragment] = &input
 
 	keys := [][]int{}
@@ -81,7 +74,7 @@ func (p *Program) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 		reFunc, _ := regexp.Compile(`\s*func.*\(\)\s*{`)
 		if reFunc.MatchString(c.Contents) {
-			p.Functions += c.Contents
+			p.Functions += "\n" + c.Contents
 			c.Executing = false
 		} else {
 			if c.Executing {
@@ -99,20 +92,57 @@ func (p *Program) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	buf.Write([]byte("\n\nfunc main() {"))
 	buf.Write(bufBody.Bytes())
 	buf.Write([]byte("\n}"))
-	err = os.WriteFile(p.File, buf.Bytes(), 0600)
+	err := os.WriteFile(p.File, buf.Bytes(), 0600)
 	if err != nil {
-		message := err.Error() + "\nMake sure the directory exists and you have permission to write there"
-		_, _ = w.Write([]byte(message))
-		log.Println(message)
-	} else {
-		result, err := p.run()
+		return err
+	}
+	return nil
+}
+
+func (p *Program) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	p.Functions = ""
+	b := make([]byte, r.ContentLength)
+	_, err := r.Body.Read(b)
+	if err != io.EOF && err != nil {
+		_, err := w.Write([]byte(err.Error()))
 		if err != nil {
-			_, _ = w.Write([]byte(err.Error()))
-			log.Println("Failed to run program:", err)
+			log.Println(err)
 		}
-		_, err = w.Write(result)
+	}
+	var input Cell
+	_ = json.Unmarshal([]byte(b), &input)
+
+	checkMain, _ := regexp.MatchString(`\s*func\s+main\s*\(\s*\)\s*{`, input.Contents)
+	checkImport, _ := regexp.MatchString(`\s*import\s+[("]`, input.Contents)
+	if checkMain {
+		_, err := w.Write([]byte("Main function is generated automatically. Please remove func main()"))
 		if err != nil {
-			fmt.Println(err)
+			log.Println(err)
+		}
+	} else if checkImport {
+		_, err = w.Write([]byte("Imports are done automatically. Please remove import statement"))
+		if err != nil {
+			log.Println(err)
+		}
+	} else {
+		err := p.writeFile(input)
+		if err != nil {
+			message := err.Error() + "\nMake sure the directory exists and you have permission to write there"
+			_, err = w.Write([]byte(message))
+			if err != nil {
+				log.Println(message)
+			}
+		}
+		result, err := p.run(input.Fragment)
+		if err != nil {
+			_, err = w.Write([]byte(err.Error()))
+			if err != nil {
+				log.Println("Failed to run program:", err)
+			}
+		}
+		_, err = w.Write([]byte(result))
+		if err != nil {
+			log.Println(err)
 		}
 	}
 }
@@ -120,6 +150,6 @@ func (p *Program) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 func main() {
 	cells := make(map[int]*Cell)
 	http.Handle("/", &Program{File: os.TempDir() + "/main.go", Cells: cells})
-	log.Println("Running on port 5250")
+	log.Println("Kernel running on port 5250")
 	log.Fatal(http.ListenAndServe(":5250", nil))
 }
