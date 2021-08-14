@@ -45,7 +45,7 @@ func (p *Program) run() ([]byte, error) {
 	end, _ := regexp.Compile("gobook-output-end")
 	s := start.FindIndex(out)
 	if s == nil {
-		return out, nil
+		return []byte{}, nil
 	}
 	e := end.FindIndex(out)
 	return out[s[1]:e[0]], nil
