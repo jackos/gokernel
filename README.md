@@ -1,12 +1,14 @@
-### Gokernel
 
-This is a rewrite of the kernel not yet implemented.
+### gokernel
 
-Instead of using an interpreter it simply writes a go program to disk and runs it.
+## Intro
+A very simple kernel that is currently made to run specifically with VS Code notebook API. It takes in a cell that has been executed from the notebook, figures out the order of execution and current order in the notebook, creates a main.go file in a temporary directory and runs it, taking only the outputs from the executing cell and returning the results to VS Code.
 
-The benefits this adds is: 
+The benefits of compilation instead of using an interpreter are: 
 - 1 to 1 with compiled go code
-- Many programs will run faster
-- Use pre-compiled external libraries
-- Remove the need to import anything in the source files
-- Much greater simplicity, not relying on external libraries
+- Many programs will run faster (0.2s for small programs)
+- Things like re-declaring variables works without issue
+- Much greater simplicity, 0 external dependencies
+
+Current Features
+- Imports everything without using any import statements in the notebook

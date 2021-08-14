@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"io"
 	"log"
 	"net/http"
@@ -17,6 +18,7 @@ type Program struct {
 	File      string        // Temp file location
 	Cells     map[int]*Cell // Represents a cell from VS Code notebook
 	Functions string
+	Filename  string
 }
 
 type Cell struct {
@@ -24,6 +26,7 @@ type Cell struct {
 	Index     int    // Current index by order in VS Code
 	Contents  string // What's inside the cell
 	Executing bool   // The cell that is currently being executed
+	Filename  string
 }
 
 func (p *Program) run(executingFragment int) ([]byte, error) {
@@ -112,44 +115,39 @@ func (p *Program) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var input Cell
 	_ = json.Unmarshal([]byte(b), &input)
 
+	fmt.Println("New file detected resetting input")
+	// If filename different to last run, reset data
+	if input.Filename != p.Filename && p.Filename != "" {
+		p.Functions = ""
+		p.Cells = make(map[int]*Cell)
+	}
+	p.Filename = input.Filename
+
 	checkMain, _ := regexp.MatchString(`\s*func\s+main\s*\(\s*\)\s*{`, input.Contents)
 	checkImport, _ := regexp.MatchString(`\s*import\s+[("]`, input.Contents)
 	if checkMain {
-		_, err := w.Write([]byte("Main function is generated automatically. Please remove func main()"))
-		if err != nil {
-			log.Println(err)
-		}
+		w.Write([]byte("exit status 3\nMain function is generated automatically. Please remove func main()"))
 	} else if checkImport {
-		_, err = w.Write([]byte("Imports are done automatically. Please remove import statement"))
-		if err != nil {
-			log.Println(err)
-		}
+		w.Write([]byte("exit status 3\nImports are done automatically. Please remove import statement"))
 	} else {
 		err := p.writeFile(input)
 		if err != nil {
-			message := err.Error() + "\nMake sure the directory exists and you have permission to write there"
-			_, err = w.Write([]byte(message))
+			message := "exit status 3\n" + err.Error() + "\nMake sure the directory exists and you have permission to write there"
+			w.Write([]byte(message))
+		} else {
+			result, err := p.run(input.Fragment)
 			if err != nil {
-				log.Println(message)
+				w.Write([]byte(err.Error()))
 			}
-		}
-		result, err := p.run(input.Fragment)
-		if err != nil {
-			_, err = w.Write([]byte(err.Error()))
-			if err != nil {
-				log.Println("Failed to run program:", err)
-			}
-		}
-		_, err = w.Write([]byte(result))
-		if err != nil {
-			log.Println(err)
+			w.Write([]byte(result))
 		}
 	}
 }
 
 func main() {
 	cells := make(map[int]*Cell)
-	http.Handle("/", &Program{File: os.TempDir() + "/main.go", Cells: cells})
+	http.Handle("/", &Program{File: os.TempDir() + "/main.go", Cells: cells, Filename: ""})
 	log.Println("Kernel running on port 5250")
+	fmt.Println("You can access the generated file by ctrl + clicking here:", os.TempDir()+"/main.go")
 	log.Fatal(http.ListenAndServe(":5250", nil))
 }
