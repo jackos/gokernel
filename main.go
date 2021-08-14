@@ -115,9 +115,9 @@ func (p *Program) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	var input Cell
 	_ = json.Unmarshal([]byte(b), &input)
 
-	fmt.Println("New file detected resetting input")
 	// If filename different to last run, reset data
 	if input.Filename != p.Filename && p.Filename != "" {
+		fmt.Println("New file detected resetting input")
 		p.Functions = ""
 		p.Cells = make(map[int]*Cell)
 	}
@@ -148,6 +148,6 @@ func main() {
 	cells := make(map[int]*Cell)
 	http.Handle("/", &Program{File: os.TempDir() + "/main.go", Cells: cells, Filename: ""})
 	log.Println("Kernel running on port 5250")
-	fmt.Println("You can access the generated file by ctrl + clicking here:", os.TempDir()+"/main.go")
+	fmt.Println("ctrl + click to view generated go code:", os.TempDir()+"/main.go")
 	log.Fatal(http.ListenAndServe(":5250", nil))
 }
