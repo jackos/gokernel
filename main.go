@@ -15,10 +15,10 @@ import (
 )
 
 type Program struct {
-	File      string        // Temp file location
+	TempFile  string        // Temp file location
+	Functions string        // The code that is pulled out of the main function
+	Filename  string        // The name of the most recently executed cell
 	Cells     map[int]*Cell // Represents a cell from VS Code notebook
-	Functions string
-	Filename  string
 }
 
 type Cell struct {
@@ -26,21 +26,25 @@ type Cell struct {
 	Index     int    // Current index by order in VS Code
 	Contents  string // What's inside the cell
 	Executing bool   // The cell that is currently being executed
-	Filename  string
+	Filename  string // What file the executing cell is from
 }
 
+// Fixes the imports of p.TempFile, runs it, and returns only the outputs of the executing cell
 func (p *Program) run(executingFragment int) ([]byte, error) {
-	err := exec.Command("gopls", "imports", "-w", filepath.Join(p.File)).Run()
+	// Adds package imports and removes anything unused
+	err := exec.Command("gopls", "imports", "-w", filepath.Join(p.TempFile)).Run()
 	if err != nil {
 		return nil, err
 	}
-	out, err := exec.Command("go", "run", filepath.Join(p.File)).CombinedOutput()
+	// Use the go run too to run the program and return the result
+	out, err := exec.Command("go", "run", filepath.Join(p.TempFile)).CombinedOutput()
 	if err != nil {
 		// If cell doesn't run due to error, clear it
 		p.Cells[executingFragment].Contents = ""
 		return out, err
 	}
-	err = exec.Command("go", "fmt", filepath.Join(p.File)).Run()
+	// Format the temp file, as some uses will check the source code
+	err = exec.Command("go", "fmt", filepath.Join(p.TempFile)).Run()
 	if err != nil {
 		return nil, err
 	}
@@ -52,50 +56,65 @@ func (p *Program) run(executingFragment int) ([]byte, error) {
 		return []byte{}, nil
 	}
 	e := end.FindIndex(out)
+	// Return just the output of the executing cell
 	return out[s[1]:e[0]], nil
 }
 
+// Determines what order the file should be written based on existing
+// execution order (fragments) and new execution order (index)
+// Fragment is a VS Code notebook term that identifies a cell at the time
+// Of execution, so if it changes order we can still modify the same cell
 func (p *Program) writeFile(input Cell) error {
+	// Overwrites cell if it already existed
 	p.Cells[input.Fragment] = &input
 
+	// The keys are used to determine current order of the notebook cells
+	// The fragments are the original order
 	keys := [][]int{}
 	for _, v := range p.Cells {
 		keys = append(keys, []int{v.Index, v.Fragment})
 	}
 
+	// Sort keys by the new order
 	sort.Slice(keys, func(i, j int) bool {
 		if keys[i][0] == keys[j][0] {
 			return true
 		}
 		return keys[i][0] < keys[j][0]
 	})
-	var buf bytes.Buffer
-	var bufBody bytes.Buffer
+
+	// Two buffers, one for code going in main and one for everything else
+	var programBuf bytes.Buffer
+	var mainFuncBuf bytes.Buffer
 
 	for _, key := range keys {
 		c := p.Cells[key[1]]
-
+		// If cell contains a function, don't write cell to mainBuf
 		reFunc, _ := regexp.Compile(`\s*func.*\(\)\s*{`)
 		if reFunc.MatchString(c.Contents) {
+			// Add it instead the the functions string
 			p.Functions += "\n" + c.Contents
+			// Also stop any output
 			c.Executing = false
 		} else {
 			if c.Executing {
-				bufBody.Write([]byte(`println("gobook-output-start")`))
+				// This output is used to limit returned text to the executing cell
+				mainFuncBuf.Write([]byte(`println("gobook-output-start")`))
 			}
-			bufBody.Write([]byte("\n" + c.Contents + "\n"))
+			mainFuncBuf.Write([]byte("\n" + c.Contents + "\n"))
 			if c.Executing {
-				bufBody.Write([]byte(`println("gobook-output-end") `))
+				mainFuncBuf.Write([]byte(`println("gobook-output-end") `))
 			}
 		}
 	}
+	// Write the rest of the program
 	p.Cells[input.Fragment].Executing = false
-	buf.Write([]byte("package main\n\n"))
-	buf.Write([]byte(p.Functions))
-	buf.Write([]byte("\n\nfunc main() {"))
-	buf.Write(bufBody.Bytes())
-	buf.Write([]byte("\n}"))
-	err := os.WriteFile(p.File, buf.Bytes(), 0600)
+	programBuf.Write([]byte("package main\n\n"))
+	programBuf.Write([]byte(p.Functions))
+	programBuf.Write([]byte("\n\nfunc main() {"))
+	programBuf.Write(mainFuncBuf.Bytes())
+	programBuf.Write([]byte("\n}"))
+	err := os.WriteFile(p.TempFile, programBuf.Bytes(), 0600)
 	if err != nil {
 		return err
 	}
@@ -146,7 +165,7 @@ func (p *Program) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	cells := make(map[int]*Cell)
-	http.Handle("/", &Program{File: os.TempDir() + "/main.go", Cells: cells, Filename: ""})
+	http.Handle("/", &Program{TempFile: os.TempDir() + "/main.go", Cells: cells, Filename: ""})
 	log.Println("Kernel running on port 5250")
 	fmt.Println("ctrl + click to view generated go code:", os.TempDir()+"/main.go")
 	log.Fatal(http.ListenAndServe(":5250", nil))
