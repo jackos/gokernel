@@ -90,7 +90,7 @@ func (p *Program) writeFile(input Cell) error {
 	for _, key := range keys {
 		c := p.Cells[key[1]]
 		// If cell contains a function, don't write cell to mainBuf
-		reFunc, _ := regexp.Compile(`\s*func.*\(\)\s*{`)
+		reFunc, _ := regexp.Compile(`\s*func.*\(\).*{`)
 		if reFunc.MatchString(c.Contents) {
 			// Add it instead the the functions string
 			p.Functions += "\n" + c.Contents
