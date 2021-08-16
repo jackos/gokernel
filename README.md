@@ -9,6 +9,3 @@ The benefits of compilation instead of using an interpreter are:
 - Many programs will run faster (0.2s for small programs)
 - Things like re-declaring variables works without issue
 - Much greater simplicity, 0 external dependencies
-
-Current Features
-- Imports everything without using any import statements in the notebook
