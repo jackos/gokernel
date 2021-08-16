@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"sort"
+	"strings"
 )
 
 type Program struct {
@@ -30,16 +31,23 @@ type Cell struct {
 }
 
 func (p *Program) run(executingFragment int) ([]byte, error) {
-	err := exec.Command("gopls", "imports", "-w", filepath.Join(p.File)).Run()
+	gopath, err := exec.Command("go", "env", "GOPATH", filepath.Join(p.File)).CombinedOutput()
+	gopls := strings.ReplaceAll(string(gopath), "\n", "") + "/bin/gopls"
+	if err != nil {
+		return gopath, err
+	}
+	err = exec.Command(gopls, "imports", "-w", filepath.Join(p.File)).Run()
 	if err != nil {
 		return nil, err
 	}
+
 	out, err := exec.Command("go", "run", filepath.Join(p.File)).CombinedOutput()
 	if err != nil {
 		// If cell doesn't run due to error, clear it
 		p.Cells[executingFragment].Contents = ""
 		return out, err
 	}
+
 	err = exec.Command("go", "fmt", filepath.Join(p.File)).Run()
 	if err != nil {
 		return nil, err
