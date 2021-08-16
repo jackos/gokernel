@@ -18,7 +18,7 @@ import (
 type Program struct {
 	TempFile  string        // Temp file location
 	Functions string        // The code that is pulled out of the main function
-	Filename  string        // The name of the most recently executed cell
+	Filename  string        // The filename from the most recently executed cell
 	Cells     map[int]*Cell // Represents a cell from VS Code notebook
 }
 
@@ -32,19 +32,19 @@ type Cell struct {
 
 // Fixes the imports of p.TempFile, runs it, and returns only the outputs of the executing cell
 func (p *Program) run(executingFragment int) ([]byte, error) {
-	gopath, err := exec.Command("go", "env", "GOPATH", filepath.Join(p.File)).CombinedOutput()
+	gopath, err := exec.Command("go", "env", "GOPATH", filepath.Join(p.TempFile)).CombinedOutput()
 	gopls := strings.ReplaceAll(string(gopath), "\n", "") + "/bin/gopls"
 	if err != nil {
 		return gopath, err
 	}
 	// Adds package imports and removes anything unused
-	err = exec.Command(gopls, "imports", "-w", filepath.Join(p.File)).Run()
+	err = exec.Command(gopls, "imports", "-w", filepath.Join(p.TempFile)).Run()
 	if err != nil {
 		return nil, err
 	}
 
 	// Use the go run too to run the program and return the result
-	out, err := exec.Command("go", "run", filepath.Join(p.File)).CombinedOutput()
+	out, err := exec.Command("go", "run", filepath.Join(p.TempFile)).CombinedOutput()
 	if err != nil {
 		// If cell doesn't run due to error, clear it
 		p.Cells[executingFragment].Contents = ""
