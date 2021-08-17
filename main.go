@@ -31,7 +31,7 @@ type Cell struct {
 }
 
 // Fixes the imports of p.TempFile, formats the file
-func (p *Program) formatFile(executingFragment int) error {
+func (p *Program) fixFile(executingFragment int) error {
 	// Find GOPATH
 	gopath, err := exec.Command("go", "env", "GOPATH", filepath.Join(p.TempFile)).CombinedOutput()
 	gopls := strings.ReplaceAll(string(gopath), "\n", "") + "/bin/gopls"
@@ -44,19 +44,22 @@ func (p *Program) formatFile(executingFragment int) error {
 	if err != nil {
 		return err
 	}
-
-	// Format the temp file, as some uses will check the source code
-	go exec.Command("go", "fmt", filepath.Join(p.TempFile)).Run()
-	if err != nil {
-		return err
-	}
-
+	go p.formatFile()
 	return nil
+}
+
+// Format the temp file, as some users will check the source code
+// Runs in a separate go routine so doesn't return any errors
+func (p *Program) formatFile() {
+	err := exec.Command("go", "fmt", filepath.Join(p.TempFile)).Run()
+	if err != nil {
+		log.Println(err)
+	}
 }
 
 // Runs the program and only returns outputs from the executing cell
 func (p *Program) run(executingFragment int) ([]byte, error) {
-	err := p.formatFile(executingFragment)
+	err := p.fixFile(executingFragment)
 	if err != nil {
 		return []byte(err.Error()), err
 	}
@@ -70,15 +73,19 @@ func (p *Program) run(executingFragment int) ([]byte, error) {
 	}
 
 	// Determine where the output for executing cell starts and ends
-	start, _ := regexp.Compile("gobook-output-start")
-	end, _ := regexp.Compile("gobook-output-end")
-	s := start.FindIndex(out)
-	if s == nil {
+	start := strings.Index(string(out), "gobook-output-start")
+	end := strings.Index(string(out), "gobook-output-end")
+	if start == -1 || end == -1 {
 		return []byte{}, nil
 	}
-	e := end.FindIndex(out)
+	s := start + 19
+	e := end
+	if s >= len(out) || e >= len(out) {
+		log.Println("Warning: output slice out of array bounds")
+		return []byte{}, nil
+	}
 	// Return just the output of the executing cell
-	return out[s[1]:e[0]], nil
+	return out[s:e], nil
 }
 
 // Determines what order the file should be written based on existing
@@ -120,21 +127,21 @@ func (p *Program) writeFile(input Cell) error {
 		} else {
 			if c.Executing {
 				// This output is used to limit returned text to the executing cell
-				mainFuncBuf.Write([]byte(`println("gobook-output-start")`))
+				fmt.Fprint(&mainFuncBuf, `println("gobook-output-start")`)
 			}
-			mainFuncBuf.Write([]byte("\n" + c.Contents + "\n"))
+			fmt.Fprint(&mainFuncBuf, "\n"+c.Contents+"\n")
 			if c.Executing {
-				mainFuncBuf.Write([]byte(`println("gobook-output-end") `))
+				fmt.Fprint(&mainFuncBuf, `println("gobook-output-end") `)
 			}
 		}
 	}
 	// Write the rest of the program
 	p.Cells[input.Fragment].Executing = false
-	programBuf.Write([]byte("package main\n\n"))
-	programBuf.Write([]byte(p.Functions))
-	programBuf.Write([]byte("\n\nfunc main() {"))
-	programBuf.Write(mainFuncBuf.Bytes())
-	programBuf.Write([]byte("\n}"))
+	fmt.Fprint(&programBuf, ("package main\n\n"))
+	fmt.Fprint(&programBuf, p.Functions)
+	fmt.Fprint(&programBuf, "\n\nfunc main() {")
+	fmt.Fprint(&programBuf, mainFuncBuf.String())
+	fmt.Fprint(&programBuf, "\n}")
 	err := os.WriteFile(p.TempFile, programBuf.Bytes(), 0600)
 	if err != nil {
 		return err
@@ -198,7 +205,6 @@ func (p *Program) checkErrors(input Cell, w http.ResponseWriter) (ok bool) {
 func (p *Program) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Reset the data in the functions outside the main block
 	p.Functions = ""
-
 	// Unmarshal data into the Cell data structure
 	input := p.Unmarshal(w, r)
 
@@ -223,6 +229,7 @@ func (p *Program) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 				w.Write([]byte(err.Error()))
 			}
 			w.Write([]byte(result))
+			log.Println("Cell executed")
 		}
 	}
 }
