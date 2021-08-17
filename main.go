@@ -129,8 +129,8 @@ func (p *Program) writeFile(input Cell) error {
 	return nil
 }
 
-func (p *Program) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	p.Functions = ""
+// Unmarshal the JSON data and return it
+func (p *Program) Unmarshal(w http.ResponseWriter, r *http.Request) Cell {
 	b := make([]byte, r.ContentLength)
 	_, err := r.Body.Read(b)
 	if err != io.EOF && err != nil {
@@ -141,6 +141,52 @@ func (p *Program) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	var input Cell
 	_ = json.Unmarshal([]byte(b), &input)
+	return input
+}
+
+// Checks if the caller is trying to write a package or main function
+// Returns appropriate error if they are. This will change later to still allow writing a main function
+// or package
+func (p *Program) checkErrors(input Cell, w http.ResponseWriter) (ok bool) {
+	// If a main function exists return error
+	checkMain, err := regexp.MatchString(`\s*func\s+main\s*\(\s*\)\s*{`, input.Contents)
+	if err != nil {
+		log.Println(err)
+	}
+	if checkMain {
+		w.Write([]byte("exit status 3\nMain function is generated automatically. Please remove func main()"))
+		return false
+	}
+
+	// If import statement exists return error
+	checkImport, err := regexp.MatchString(`\s*import\s+[("]`, input.Contents)
+	if err != nil {
+		log.Println(err)
+	}
+	if checkImport {
+		w.Write([]byte("exit status 3\nImports are done automatically. Please remove import statement"))
+		return false
+	}
+
+	// Check if user declaring a package
+	checkPackage, err := regexp.MatchString(`\s*package\s+\w*\n"]`, input.Contents)
+	if err != nil {
+		log.Println(err)
+	}
+	if checkPackage {
+		w.Write([]byte("exit status 3\nAre package is generated automatically. Please remove package statement"))
+		return false
+	}
+
+	return true
+
+}
+func (p *Program) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	// Reset the data in the functions outside the main block
+	p.Functions = ""
+
+	// Unmarshal data into the Cell data structure
+	input := p.Unmarshal(w, r)
 
 	// If filename different to last run, reset data
 	if input.Filename != p.Filename && p.Filename != "" {
@@ -150,18 +196,14 @@ func (p *Program) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	}
 	p.Filename = input.Filename
 
-	checkMain, _ := regexp.MatchString(`\s*func\s+main\s*\(\s*\)\s*{`, input.Contents)
-	checkImport, _ := regexp.MatchString(`\s*import\s+[("]`, input.Contents)
-	if checkMain {
-		w.Write([]byte("exit status 3\nMain function is generated automatically. Please remove func main()"))
-	} else if checkImport {
-		w.Write([]byte("exit status 3\nImports are done automatically. Please remove import statement"))
-	} else {
+	if ok := p.checkErrors(input, w); ok {
 		err := p.writeFile(input)
+		// If error writing file return error
 		if err != nil {
 			message := "exit status 3\n" + err.Error() + "\nMake sure the directory exists and you have permission to write there"
 			w.Write([]byte(message))
 		} else {
+			// If successful up to this point, run the program and return result
 			result, err := p.run(input.Fragment)
 			if err != nil {
 				w.Write([]byte(err.Error()))
