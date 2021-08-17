@@ -7,5 +7,5 @@ A very simple kernel that is currently made to run specifically with VS Code not
 The benefits of compilation instead of using an interpreter are: 
 - 1 to 1 with compiled Go code
 - Many programs will run faster (0.2s for small programs)
-- Things like re-declaring variables works without issue
+- Things like rerunnning a cell that declares a variable work without issue
 - Much greater simplicity, 0 external dependencies
