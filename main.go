@@ -1,3 +1,5 @@
+// This is a http server that starts from VS Code, only one request is ever running
+// at the same time, the VS Code notebook API runs cells synchronously based on execution order.
 package main
 
 import (
@@ -13,13 +15,14 @@ import (
 	"regexp"
 	"sort"
 	"strings"
+	"time"
 )
 
 type Program struct {
-	TempFile      string        // Temp file location
-	Functions     string        // The code that is pulled out of the main function
-	ExecutingFile string        // The filename from the most recently executed cell
-	Cells         map[int]*Cell // Represents a cell from VS Code notebook
+	TempFile         string        // Temp file location
+	Functions        string        // The code that is pulled out of the main function
+	ExecutedFilename string        // The most recently executed filename
+	Cells            map[int]*Cell // Represents a cell from VS Code notebook
 }
 
 type Cell struct {
@@ -30,7 +33,9 @@ type Cell struct {
 	Filename  string // What file the executing cell is from
 }
 
-// Fixes the imports of p.TempFile, formats the file
+type FragmentKey []int
+
+// Fixes the imports of p.TempFile and formats the file
 func (p *Program) fixFile(executingFragment int) error {
 	// Find GOPATH
 	gopath, err := exec.Command("go", "env", "GOPATH", filepath.Join(p.TempFile)).CombinedOutput()
@@ -49,7 +54,7 @@ func (p *Program) fixFile(executingFragment int) error {
 }
 
 // Format the temp file, as some users will check the source code
-// Runs in a separate go routine so doesn't return any errors
+// Runs in a separate go routine as not required before returning output
 func (p *Program) formatFile() {
 	err := exec.Command("go", "fmt", filepath.Join(p.TempFile)).Run()
 	if err != nil {
@@ -98,7 +103,7 @@ func (p *Program) writeFile(input Cell) error {
 
 	// The keys are used to determine current order of the notebook cells
 	// The fragments are the original order
-	keys := [][]int{}
+	keys := []FragmentKey{}
 	for _, v := range p.Cells {
 		keys = append(keys, []int{v.Index, v.Fragment})
 	}
@@ -120,9 +125,9 @@ func (p *Program) writeFile(input Cell) error {
 		// If cell contains a function, don't write cell to mainBuf
 		reFunc, _ := regexp.Compile(`\s*func.*\(.*\).*{`)
 		if reFunc.MatchString(c.Contents) {
-			// Add it instead the the functions string
+			// Add it instead to the functions string
 			p.Functions += "\n" + c.Contents
-			// Also stop any output
+			// Also stop any output returning to to client
 			c.Executing = false
 		} else {
 			if c.Executing {
@@ -135,13 +140,9 @@ func (p *Program) writeFile(input Cell) error {
 			}
 		}
 	}
-	// Write the rest of the program
 	p.Cells[input.Fragment].Executing = false
-	fmt.Fprint(&programBuf, ("package main\n\n"))
-	fmt.Fprint(&programBuf, p.Functions)
-	fmt.Fprint(&programBuf, "\n\nfunc main() {")
-	fmt.Fprint(&programBuf, mainFuncBuf.String())
-	fmt.Fprint(&programBuf, "\n}")
+	// Write the program
+	fmt.Fprintf(&programBuf, ("package main\n\n%s\n\nfunc main() {%s\n}"), p.Functions, &mainFuncBuf)
 	err := os.WriteFile(p.TempFile, programBuf.Bytes(), 0600)
 	if err != nil {
 		return err
@@ -174,7 +175,10 @@ func (p *Program) checkErrors(input Cell, w http.ResponseWriter) (ok bool) {
 		log.Println(err)
 	}
 	if checkMain {
-		w.Write([]byte("exit status 3\nMain function is generated automatically. Please remove func main()"))
+		_, err := w.Write([]byte("exit status 3\nMain function is generated automatically. Please remove func main()"))
+		if err != nil {
+			log.Println(err)
+		}
 		return false
 	}
 
@@ -184,7 +188,10 @@ func (p *Program) checkErrors(input Cell, w http.ResponseWriter) (ok bool) {
 		log.Println(err)
 	}
 	if checkImport {
-		w.Write([]byte("exit status 3\nImports are done automatically. Please remove import statement"))
+		_, err := w.Write([]byte("exit status 3\nImports are done automatically. Please remove import statement"))
+		if err != nil {
+			log.Println(err)
+		}
 		return false
 	}
 
@@ -194,7 +201,10 @@ func (p *Program) checkErrors(input Cell, w http.ResponseWriter) (ok bool) {
 		log.Println(err)
 	}
 	if checkPackage {
-		w.Write([]byte("exit status 3\nAre package is generated automatically. Please remove package statement"))
+		_, err = w.Write([]byte("exit status 3\nAre package is generated automatically. Please remove package statement"))
+		if err != nil {
+			log.Println(err)
+		}
 		return false
 	}
 
@@ -209,35 +219,50 @@ func (p *Program) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	input := p.Unmarshal(w, r)
 
 	// If filename different to last run, reset data
-	if input.Filename != p.ExecutingFile && p.ExecutingFile != "" {
+	if input.Filename != p.ExecutedFilename && p.ExecutedFilename != "" {
 		fmt.Println("New file detected resetting input")
 		p.Functions = ""
 		p.Cells = make(map[int]*Cell)
 	}
-	p.ExecutingFile = input.Filename
+	p.ExecutedFilename = input.Filename
 
 	if ok := p.checkErrors(input, w); ok {
 		err := p.writeFile(input)
 		// If error writing file return error
 		if err != nil {
 			message := "exit status 3\n" + err.Error() + "\nMake sure the directory exists and you have permission to write there"
-			w.Write([]byte(message))
+			_, err := w.Write([]byte(message))
+			if err != nil {
+				log.Println(err)
+			}
 		} else {
 			// If successful up to this point, run the program and return result
 			result, err := p.run(input.Fragment)
 			if err != nil {
-				w.Write([]byte(err.Error()))
+				_, err := w.Write([]byte(err.Error()))
+				if err != nil {
+					fmt.Println(err)
+				}
 			}
-			w.Write([]byte(result))
-			log.Println("Cell executed")
+			_, err = w.Write([]byte(result))
+			if err != nil {
+				fmt.Println(err)
+			}
 		}
 	}
 }
 
 func main() {
 	cells := make(map[int]*Cell)
-	http.Handle("/", &Program{TempFile: os.TempDir() + "/main.go", Cells: cells, ExecutingFile: ""})
+	http.Handle("/", &Program{TempFile: os.TempDir() + "/main.go", Cells: cells, ExecutedFilename: ""})
 	log.Println("Kernel running on port 5250")
 	fmt.Println("ctrl + click to view generated go code:", os.TempDir()+"/main.go")
-	log.Fatal(http.ListenAndServe(":5250", nil))
+	s := &http.Server{
+		Addr:           "127.0.0.1:5250",
+		Handler:        nil,
+		ReadTimeout:    30 * time.Second,
+		WriteTimeout:   30 * time.Second,
+		MaxHeaderBytes: 1 << 20,
+	}
+	log.Fatal(s.ListenAndServe())
 }
