@@ -16,10 +16,10 @@ import (
 )
 
 type Program struct {
-	TempFile  string        // Temp file location
-	Functions string        // The code that is pulled out of the main function
-	Filename  string        // The filename from the most recently executed cell
-	Cells     map[int]*Cell // Represents a cell from VS Code notebook
+	TempFile      string        // Temp file location
+	Functions     string        // The code that is pulled out of the main function
+	ExecutingFile string        // The filename from the most recently executed cell
+	Cells         map[int]*Cell // Represents a cell from VS Code notebook
 }
 
 type Cell struct {
@@ -30,32 +30,45 @@ type Cell struct {
 	Filename  string // What file the executing cell is from
 }
 
-// Fixes the imports of p.TempFile, runs it, and returns only the outputs of the executing cell
-func (p *Program) run(executingFragment int) ([]byte, error) {
+// Fixes the imports of p.TempFile, formats the file
+func (p *Program) formatFile(executingFragment int) error {
+	// Find GOPATH
 	gopath, err := exec.Command("go", "env", "GOPATH", filepath.Join(p.TempFile)).CombinedOutput()
 	gopls := strings.ReplaceAll(string(gopath), "\n", "") + "/bin/gopls"
 	if err != nil {
-		return gopath, err
+		return err
 	}
+
 	// Adds package imports and removes anything unused
 	err = exec.Command(gopls, "imports", "-w", filepath.Join(p.TempFile)).Run()
 	if err != nil {
-		return nil, err
+		return err
 	}
 
-	// Use the go run too to run the program and return the result
+	// Format the temp file, as some uses will check the source code
+	go exec.Command("go", "fmt", filepath.Join(p.TempFile)).Run()
+	if err != nil {
+		return err
+	}
+
+	return nil
+}
+
+// Runs the program and only returns outputs from the executing cell
+func (p *Program) run(executingFragment int) ([]byte, error) {
+	err := p.formatFile(executingFragment)
+	if err != nil {
+		return []byte(err.Error()), err
+	}
+
+	// Use the go run tool to run the program and return the result
 	out, err := exec.Command("go", "run", filepath.Join(p.TempFile)).CombinedOutput()
 	if err != nil {
 		// If cell doesn't run due to error, clear it
 		p.Cells[executingFragment].Contents = ""
 		return out, err
 	}
-	// Format the temp file, as some uses will check the source code
-	err = exec.Command("go", "fmt", filepath.Join(p.TempFile)).Run()
 
-	if err != nil {
-		return nil, err
-	}
 	// Determine where the output for executing cell starts and ends
 	start, _ := regexp.Compile("gobook-output-start")
 	end, _ := regexp.Compile("gobook-output-end")
@@ -71,7 +84,7 @@ func (p *Program) run(executingFragment int) ([]byte, error) {
 // Determines what order the file should be written based on existing
 // execution order (fragments) and new execution order (index)
 // Fragment is a VS Code notebook term that identifies a cell at the time
-// Of execution, so if it changes order we can still modify the same cell
+// of execution, so if it changes order we can still modify the same cell
 func (p *Program) writeFile(input Cell) error {
 	// Overwrites cell if it already existed
 	p.Cells[input.Fragment] = &input
@@ -145,8 +158,8 @@ func (p *Program) Unmarshal(w http.ResponseWriter, r *http.Request) Cell {
 }
 
 // Checks if the caller is trying to write a package or main function
-// Returns appropriate error if they are. This will change later to still allow writing a main function
-// or package
+// Returns appropriate error if they are.
+// This will change later to still allow writing a main function or package
 func (p *Program) checkErrors(input Cell, w http.ResponseWriter) (ok bool) {
 	// If a main function exists return error
 	checkMain, err := regexp.MatchString(`\s*func\s+main\s*\(\s*\)\s*{`, input.Contents)
@@ -181,6 +194,7 @@ func (p *Program) checkErrors(input Cell, w http.ResponseWriter) (ok bool) {
 	return true
 
 }
+
 func (p *Program) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	// Reset the data in the functions outside the main block
 	p.Functions = ""
@@ -189,12 +203,12 @@ func (p *Program) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	input := p.Unmarshal(w, r)
 
 	// If filename different to last run, reset data
-	if input.Filename != p.Filename && p.Filename != "" {
+	if input.Filename != p.ExecutingFile && p.ExecutingFile != "" {
 		fmt.Println("New file detected resetting input")
 		p.Functions = ""
 		p.Cells = make(map[int]*Cell)
 	}
-	p.Filename = input.Filename
+	p.ExecutingFile = input.Filename
 
 	if ok := p.checkErrors(input, w); ok {
 		err := p.writeFile(input)
@@ -215,7 +229,7 @@ func (p *Program) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func main() {
 	cells := make(map[int]*Cell)
-	http.Handle("/", &Program{TempFile: os.TempDir() + "/main.go", Cells: cells, Filename: ""})
+	http.Handle("/", &Program{TempFile: os.TempDir() + "/main.go", Cells: cells, ExecutingFile: ""})
 	log.Println("Kernel running on port 5250")
 	fmt.Println("ctrl + click to view generated go code:", os.TempDir()+"/main.go")
 	log.Fatal(http.ListenAndServe(":5250", nil))
