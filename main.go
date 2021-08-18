@@ -122,9 +122,11 @@ func (p *Program) writeFile(input Cell) error {
 
 	for _, key := range keys {
 		c := p.Cells[key[1]]
-		// If cell contains a function, don't write cell to mainBuf
-		reFunc, _ := regexp.Compile(`\s*func.*\(.*\).*{`)
-		if reFunc.MatchString(c.Contents) {
+		// If cell contains a function or type, don't write cell to mainBuf
+		reType, _ := regexp.Compile(`\s*type.*{`)
+		reFunc, _ := regexp.Compile(`\s*func\s+\w+\s*\(.*\).*{`)
+		reRecFunc, _ := regexp.Compile(`\s*func \(.*\)\s+\w+\(.*\).*{`)
+		if reFunc.MatchString(c.Contents) || reType.MatchString(c.Contents) || reRecFunc.MatchString(c.Contents) {
 			// Add it instead to the functions string
 			p.Functions += "\n" + c.Contents
 			// Also stop any output returning to to client
