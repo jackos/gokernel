@@ -1,5 +1,5 @@
 $ cat .github/workflows/test.yml
-on: [push, pull_request]
+on: push
 name: Test
 jobs:
   test:
