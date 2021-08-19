@@ -15,6 +15,7 @@ jobs:
     - name: Checkout code
       uses: actions/checkout@v2
     - name: Install gopls
-      uses: go get golang.org/x/tools/gopls@latest
+      run: |
+        go get -v golang.org/x/tools/gopls@latest
     - name: Test
       run: go test ./...
